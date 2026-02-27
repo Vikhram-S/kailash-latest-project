@@ -1,75 +1,66 @@
-
 import streamlit as st
-import face_recognition
+from deepface import DeepFace
+import os
 import cv2
 import numpy as np
-import os
-from datetime import datetime
+from PIL import Image
+import tempfile
 
 st.set_page_config(page_title="Smart Doorbell", layout="wide")
+st.title("🔔 Smart Doorbell - Face Recognition (Cloud Version)")
 
-st.title("🔔 Smart Doorbell - Face Recognition System")
+KNOWN_FACES_DIR = "known_faces"
 
-# -----------------------------
-# Load Known Faces
-# -----------------------------
-@st.cache_resource
-def load_known_faces():
-    known_face_encodings = []
-    known_face_names = []
-    known_faces_dir = "known_faces"
+st.sidebar.header("Upload Known Faces")
+uploaded_known = st.sidebar.file_uploader(
+    "Upload Known Person Image",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True
+)
 
-    for filename in os.listdir(known_faces_dir):
-        if filename.lower().endswith(("jpg", "jpeg", "png")):
-            image_path = os.path.join(known_faces_dir, filename)
-            image = face_recognition.load_image_file(image_path)
-            encodings = face_recognition.face_encodings(image)
-            if len(encodings) > 0:
-                known_face_encodings.append(encodings[0])
-                known_face_names.append(os.path.splitext(filename)[0])
+if uploaded_known:
+    if not os.path.exists(KNOWN_FACES_DIR):
+        os.makedirs(KNOWN_FACES_DIR)
 
-    return known_face_encodings, known_face_names
+    for file in uploaded_known:
+        with open(os.path.join(KNOWN_FACES_DIR, file.name), "wb") as f:
+            f.write(file.getbuffer())
 
+    st.sidebar.success("Known faces uploaded successfully!")
 
-known_face_encodings, known_face_names = load_known_faces()
+st.header("📷 Capture Visitor")
 
-run = st.checkbox("Start Camera")
-FRAME_WINDOW = st.image([])
+visitor_image = st.camera_input("Take a Picture")
 
-camera = cv2.VideoCapture(0)
+if visitor_image is not None:
 
-while run:
-    ret, frame = camera.read()
-    if not ret:
-        st.error("Failed to access camera")
-        break
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+        tmp.write(visitor_image.getvalue())
+        visitor_path = tmp.name
 
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    st.image(visitor_image, caption="Captured Visitor", use_column_width=True)
 
-    face_locations = face_recognition.face_locations(rgb_frame)
-    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+    recognized = False
 
-    for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
+    if os.path.exists(KNOWN_FACES_DIR):
+        for filename in os.listdir(KNOWN_FACES_DIR):
+            known_path = os.path.join(KNOWN_FACES_DIR, filename)
 
-        matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-        name = "Unknown Visitor"
+            try:
+                result = DeepFace.verify(
+                    img1_path=visitor_path,
+                    img2_path=known_path,
+                    model_name="Facenet",
+                    enforce_detection=False
+                )
 
-        if len(known_face_encodings) > 0:
-            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-            best_match_index = np.argmin(face_distances)
+                if result["verified"]:
+                    st.success(f"✅ Recognized: {os.path.splitext(filename)[0]}")
+                    recognized = True
+                    break
 
-            if matches[best_match_index]:
-                name = known_face_names[best_match_index]
-            else:
-                if not os.path.exists("unknown_faces"):
-                    os.makedirs("unknown_faces")
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                cv2.imwrite(f"unknown_faces/unknown_{timestamp}.jpg", frame)
+            except:
+                pass
 
-        cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-        cv2.putText(frame, name, (left, top - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-
-    FRAME_WINDOW.image(frame, channels="BGR")
-
-camera.release()
+    if not recognized:
+        st.error("🚨 Unknown Visitor Detected")
